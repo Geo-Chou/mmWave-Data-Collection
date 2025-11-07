@@ -223,6 +223,9 @@ def visualize_lidar_data(lidar_queue: Queue, stop_evt) -> None:
     '''
     vis = o3d.visualization.Visualizer()
     vis.create_window("Live Lidar 3D Point Cloud Update", width=1280, height=960)  # Set window size
+    render_option = vis.get_render_option()
+    render_option.point_size = 5.0
+    render_option.background_color = np.array([0, 0, 0])
     pcd = o3d.geometry.PointCloud()
     plot_index = 0
     while True:
@@ -233,21 +236,26 @@ def visualize_lidar_data(lidar_queue: Queue, stop_evt) -> None:
             continue
         points, intensity = lidar_queue.get()
         
-        # if intensity is not None:
-        #     intensity = np.asarray(intensity, dtype=np.float64).reshape(-1, 1)
-        #     intensity = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-8)
+        if intensity is None or len(intensity) == 0:
+            colors = np.ones((points.shape[0], 3)) * 0.5  
+        else:
+            intensity = np.asarray(intensity).reshape(-1)
 
-        #     intensity = np.repeat(intensity, 3, axis=1)
-        #     pcd.colors = o3d.utility.Vector3dVector(intensity)
-        # else:
-        #     print("No intensity data, using uniform color.")
-        #     pcd.paint_uniform_color([0.5, 0.5, 0.5])
+            norm = mcolors.Normalize(
+                vmin=np.percentile(intensity, 2),
+                vmax=np.percentile(intensity, 98)
+            )
+            intensity_norm = np.power(norm(intensity), 0.8 ) 
+            mapped = cm.inferno(intensity_norm)[:, :3]        
+            colors = mapped.astype(np.float32)
         if plot_index == 0:
             # Get next range map from queue (blocks until available)
             pcd.points = o3d.utility.Vector3dVector(points)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+            pcd.voxel_down_sample(voxel_size=0.2)
             vis.add_geometry(pcd)
-            axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])    
-            vis.add_geometry(axis)
+            # axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=5, origin=[0, 0, 0])    
+            # vis.add_geometry(axis)
             view_control = vis.get_view_control()
             view_control.set_lookat([0, 0, 0])  # Adjust center
             view_control.set_front([-1, 0, 0])  # Adjust camera direction
@@ -258,7 +266,9 @@ def visualize_lidar_data(lidar_queue: Queue, stop_evt) -> None:
             if points is None:
                 print("Ouster Visualizer: Termination signal detected.")
                 break
+            pcd.colors = o3d.utility.Vector3dVector(colors)
             pcd.points = o3d.utility.Vector3dVector(points)
+            pcd.voxel_down_sample(voxel_size=0.2)
             # if not np.array_equal(pcd.colors, intensity):
             #     pcd.colors = o3d.utility.Vector3dVector(intensity)
             vis.update_geometry(pcd)
