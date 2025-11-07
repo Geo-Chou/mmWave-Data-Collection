@@ -19,6 +19,10 @@ import argparse
 import open3d as o3d
 import pyvista as pv
 
+from ouster.sdk import client
+from ouster.sdk.client import Sensor, Scans  # 或用 pcap.Pcap 等
+from ouster.sdk import point_viz as viz
+
 from lidar import OusterConfig,ouster_receiver, ouster_processor
 
 from isac_host.main_isac_app import udp_data_receive, plot_point_cloud
@@ -266,7 +270,77 @@ def visualize_lidar_data(lidar_queue: Queue, stop_evt) -> None:
             vis.update_renderer()
         plot_index = plot_index + 1
 
-    
+
+def fov_mask_from_xyz(xyz: np.ndarray,
+                      az_range=(120.0, 240.0),
+                      el_range=(-45.0, 45.0)) -> np.ndarray:
+    """
+    xyz: (H, W, 3) / (N, 3)
+    """
+    x = xyz[..., 0]
+    y = xyz[..., 1]
+    z = xyz[..., 2]
+
+    rho = np.sqrt(x * x + y * y)
+    az = (np.degrees(np.arctan2(y, x)) + 360.0) % 360.0
+    el = np.degrees(np.arctan2(z, rho))
+
+    az_min, az_max = az_range
+    el_min, el_max = el_range
+
+    if az_min <= az_max:
+        az_ok = (az >= az_min) & (az <= az_max)
+    else:
+        az_ok = (az >= az_min) | (az <= az_max)
+
+    el_ok = (el >= el_min) & (el <= el_max)
+
+    return az_ok & el_ok
+
+def lidar_visualization_pv(duration):
+    AZ_RANGE = (120.0, 240.0)   
+    EL_RANGE = (-45.0, 45.0)   
+    SENSOR_HOST = "os-XXXXXXXXXXXX.local"
+    start_time = time.time()
+    with Sensor(SENSOR_HOST, timeout=1) as source:
+        info = source.metadata
+        xyzlut = client.XYZLut(info)
+
+        # PointViz
+        pv = viz.PointViz("Ouster FOV mask 120-240 / -45-45")
+        # empty cloud to start
+        cloud = viz.Cloud(np.empty((1, 3), dtype=np.float32))
+        pv.add(cloud)
+
+        # scan without save
+        for scan in Scans(source):
+            if time.time() - start_time > duration:
+                print("Lidar Visualization: Duration reached, exiting.")
+                break
+            # (H, W, 3) float32
+            xyz = xyzlut(scan) 
+
+            # FOV mask
+            mask = fov_mask_from_xyz(xyz, AZ_RANGE, EL_RANGE)
+
+            # FOV
+            xyz_vis = xyz.reshape(-1, 3).copy()
+            mflat = mask.reshape(-1)
+            xyz_vis[~mflat] = np.nan
+
+            # PointViz
+            cloud.set_xyz(xyz_vis)
+
+            # color map
+            rng = scan.field(client.ChanField.RANGE).astype(np.float32)
+            rng_vis = rng.reshape(-1).copy()
+            rng_vis[~mflat] = np.nan
+            cloud.set_range(rng_vis)
+
+            # ui drive
+            pv.update()  
+
+        pv.run()  
 
 
 if __name__ == "__main__":
@@ -289,26 +363,19 @@ if __name__ == "__main__":
     plot_ouster_queue = Queue(maxsize=10)
 
     
-    receiver_process = Process(target=ouster_receiver, args=(shared_ouster_queue, args.RECORD_DURATION, stop_evt_lidar))
-    processor_process = Process(target=ouster_processor, args=(shared_ouster_queue, plot_ouster_queue, SAVE_DIR, stop_evt_lidar))
-    
+    receiver_process = Process(target=lidar_visualization_pv, args=(args.RECORD_DURATION))
 
     udp_process = Process(target=udp_data_receive, args=(shared_udp_queue,args.RECORD_DURATION, stop_evt_radar)) 
     radar_process = Process(target=process_save_radar_data, args=(shared_udp_queue,shared_radar_queue, stop_evt_radar))
 
     radar_visualizer_process = Process(target=visualize_radar_data, args=(shared_radar_queue, stop_evt_radar))
-    lidar_visualizer_process = Process(target=visualize_lidar_data, args=(plot_ouster_queue, stop_evt_lidar))
 
     udp_process.start()
     radar_process.start()
     receiver_process.start()
-    processor_process.start()
     radar_visualizer_process.start()
-    lidar_visualizer_process.start()
 
     udp_process.join()
     radar_process.join()
     receiver_process.join()
-    processor_process.join()
     radar_visualizer_process.join()
-    lidar_visualizer_process.join()

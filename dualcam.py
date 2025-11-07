@@ -21,7 +21,7 @@ def collect_realsense_data(shared_id_queue, shm_name_vtx, shm_name_img,
 
     pipeline = rs.pipeline()
     config = rs.config()
-    config.enable_record_to_file(os.path.join(save_dir, f"{start_time}.bag"))
+    config.enable_record_to_file(os.path.join(save_dir, f"../{start_time}.bag"))
     config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
     config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
     pipeline.start(config)
